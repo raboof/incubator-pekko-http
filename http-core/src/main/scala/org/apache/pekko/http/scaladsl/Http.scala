@@ -23,8 +23,6 @@ import pekko.dispatch.ExecutionContexts
 import pekko.event.{ LogSource, Logging, LoggingAdapter }
 import pekko.http.impl.engine.HttpConnectionIdleTimeoutBidi
 import pekko.http.impl.engine.client._
-import pekko.http.impl.engine.http2.Http2
-import pekko.http.impl.engine.http2.OutgoingConnectionBuilderImpl
 import pekko.http.impl.engine.rendering.DateHeaderRendering
 import pekko.http.impl.engine.server._
 import pekko.http.impl.engine.ws.WebSocketClientBlueprint
@@ -103,59 +101,12 @@ class HttpExt @InternalStableApi /* constructor signature is hardcoded in Teleme
   // Date header rendering is shared across the system, so that date is only rendered once a second
   private[http] val dateHeaderRendering = DateHeaderRendering()
 
-  private type ServerLayerBidiFlow = BidiFlow[HttpResponse, ByteString, ByteString, HttpRequest, ServerTerminator]
-  private type ServerLayerFlow = Flow[ByteString, ByteString, (Future[Done], ServerTerminator)]
-
-  private def fuseServerBidiFlow(
-      settings: ServerSettings,
-      connectionContext: ConnectionContext,
-      log: LoggingAdapter): ServerLayerBidiFlow = {
-    val httpLayer = serverLayer(settings, None, log, connectionContext.isSecure)
-    val tlsStage = sslTlsServerStage(connectionContext)
-
-    val serverBidiFlow =
-      settings.idleTimeout match {
-        case t: FiniteDuration => httpLayer.atop(tlsStage).atop(HttpConnectionIdleTimeoutBidi(t, None))
-        case _                 => httpLayer.atop(tlsStage)
-      }
-
-    GracefulTerminatorStage(system, settings).atop(serverBidiFlow)
-  }
+  private type ServerLayerBidiFlow = BidiFlow[HttpResponse, ByteString, ByteString, HttpRequest, NotUsed]
+  private type ServerLayerFlow = Flow[ByteString, ByteString, (Future[Done], NotUsed)]
 
   private def delayCancellationStage(
       settings: ServerSettings): BidiFlow[SslTlsOutbound, SslTlsOutbound, SslTlsInbound, SslTlsInbound, NotUsed] =
     BidiFlow.fromFlows(Flow[SslTlsOutbound], StreamUtils.delayCancellation(settings.lingerTimeout))
-
-  private def fuseServerFlow(
-      baseFlow: ServerLayerBidiFlow,
-      handler: Flow[HttpRequest, HttpResponse, Any]): ServerLayerFlow =
-    Flow.fromGraph(
-      Flow[HttpRequest]
-        .watchTermination()(Keep.right)
-        .via(handler)
-        .watchTermination() { (termWatchBefore, termWatchAfter) =>
-          // flag termination when the user handler has gotten (or has emitted) termination
-          // signals in both directions
-          termWatchBefore.flatMap(_ => termWatchAfter)(ExecutionContexts.parasitic)
-        }
-        .joinMat(baseFlow)(Keep.both))
-
-  private def tcpBind(interface: String, port: Int, settings: ServerSettings)
-      : Source[Tcp.IncomingConnection, Future[Tcp.ServerBinding]] =
-    Tcp(system)
-      .bind(
-        interface,
-        port,
-        settings.backlog,
-        settings.socketOptions,
-        halfClose = false,
-        idleTimeout = Duration.Inf // we knowingly disable idle-timeout on TCP level, as we handle it explicitly in Pekko HTTP itself
-      )
-
-  private def choosePort(port: Int, connectionContext: ConnectionContext, settings: ServerSettings) =
-    if (port >= 0) port
-    else if (connectionContext.isSecure) settings.defaultHttpsPort
-    else settings.defaultHttpPort
 
   /**
    * Main entry point to create a server binding.
@@ -194,28 +145,7 @@ class HttpExt @InternalStableApi /* constructor signature is hardcoded in Teleme
       connectionContext: ConnectionContext = defaultServerHttpContext,
       settings: ServerSettings = ServerSettings(system),
       log: LoggingAdapter = system.log): Source[Http.IncomingConnection, Future[ServerBinding]] = {
-    if (settings.previewServerSettings.enableHttp2)
-      log.warning(
-        s"Binding with a connection source not supported with HTTP/2. Falling back to HTTP/1.1 for port [$port]")
-
-    val fullLayer: ServerLayerBidiFlow = fuseServerBidiFlow(settings, connectionContext, log)
-
-    val masterTerminator = new MasterServerTerminator(log)
-
-    tcpBind(interface, choosePort(port, connectionContext, settings), settings)
-      .map(incoming => {
-        val preparedLayer: BidiFlow[HttpResponse, ByteString, ByteString, HttpRequest, ServerTerminator] =
-          fullLayer.addAttributes(prepareAttributes(settings, incoming))
-        val serverFlow: Flow[HttpResponse, HttpRequest, ServerTerminator] = preparedLayer.join(incoming.flow)
-        IncomingConnection(incoming.localAddress, incoming.remoteAddress, serverFlow)
-      })
-      .mapMaterializedValue {
-        _.map(tcpBinding =>
-          ServerBinding(tcpBinding.localAddress)(
-            () => tcpBinding.unbind(),
-            timeout => masterTerminator.terminate(timeout)(systemMaterializer.executionContext)))(
-          systemMaterializer.executionContext)
-      }
+          ???
   }
 
   // forwarder to allow internal code to call deprecated method without warning
@@ -245,57 +175,7 @@ class HttpExt @InternalStableApi /* constructor signature is hardcoded in Teleme
       connectionContext: ConnectionContext = defaultServerHttpContext,
       settings: ServerSettings = ServerSettings(system),
       log: LoggingAdapter = system.log)(implicit fm: Materializer = systemMaterializer): Future[ServerBinding] = {
-    if (settings.previewServerSettings.enableHttp2)
-      log.warning(
-        s"Binding with a connection source not supported with HTTP/2. Falling back to HTTP/1.1 for port [$port].")
-
-    val fullLayer: Flow[ByteString, ByteString, (Future[Done], ServerTerminator)] =
-      fuseServerFlow(fuseServerBidiFlow(settings, connectionContext, log), handler)
-
-    val masterTerminator = new MasterServerTerminator(log)
-
-    tcpBind(interface, choosePort(port, connectionContext, settings), settings)
-      .mapAsyncUnordered(settings.maxConnections) { incoming =>
-        try {
-          fullLayer
-            .watchTermination() {
-              case ((done, connectionTerminator), whenTerminates) =>
-                whenTerminates.onComplete { _ =>
-                  masterTerminator.removeConnection(connectionTerminator)
-                }(fm.executionContext)
-                (done, connectionTerminator)
-            }
-            .addAttributes(prepareAttributes(settings, incoming))
-            .join(incoming.flow)
-            .mapMaterializedValue {
-              case (future, connectionTerminator) =>
-                masterTerminator.registerConnection(connectionTerminator)(fm.executionContext)
-                future // drop the terminator matValue, we already registered is which is all we need to do here
-            }
-            .addAttributes(cancellationStrategyAttributeForDelay(settings.streamCancellationDelay))
-            .run()
-            .recover {
-              // Ignore incoming errors from the connection as they will cancel the binding.
-              // As far as it is known currently, these errors can only happen if a TCP error bubbles up
-              // from the TCP layer through the HTTP layer to the Http.IncomingConnection.flow.
-              // See https://github.com/akka/akka/issues/17992
-              case NonFatal(ex) => Done
-            }(ExecutionContexts.parasitic)
-        } catch {
-          case NonFatal(e) =>
-            log.error(e, "Could not materialize handling flow for {}", incoming)
-            throw e
-        }
-      }
-      .mapMaterializedValue { m =>
-        m.map(tcpBinding =>
-          ServerBinding(
-            tcpBinding.localAddress)(
-            () => tcpBinding.unbind(),
-            timeout => masterTerminator.terminate(timeout)(fm.executionContext)))(fm.executionContext)
-      }
-      .to(Sink.ignore)
-      .run()
+          ???
   }
 
   // forwarder to allow internal code to call deprecated method without warning
@@ -357,22 +237,7 @@ class HttpExt @InternalStableApi /* constructor signature is hardcoded in Teleme
       settings: ServerSettings = ServerSettings(system),
       parallelism: Int = 0,
       log: LoggingAdapter = system.log)(implicit fm: Materializer = systemMaterializer): Future[ServerBinding] = {
-    if (settings.previewServerSettings.enableHttp2) {
-      log.debug("Binding server using HTTP/2")
-
-      val definitiveSettings =
-        if (parallelism > 0) settings.mapHttp2Settings(_.withMaxConcurrentStreams(parallelism))
-        else if (parallelism < 0) throw new IllegalArgumentException("Only positive values allowed for `parallelism`.")
-        else settings
-      Http2().bindAndHandleAsync(handler, interface, port, connectionContext, definitiveSettings, log)(fm)
-    } else {
-      val definitiveParallelism =
-        if (parallelism > 0) parallelism
-        else if (parallelism < 0) throw new IllegalArgumentException("Only positive values allowed for `parallelism`.")
-        else settings.pipeliningLimit
-      bindAndHandleImpl(Flow[HttpRequest].mapAsync(definitiveParallelism)(handler), interface, port, connectionContext,
-        settings, log)
-    }
+          ???
   }
 
   // forwarder to allow internal code to call deprecated method without warning
@@ -417,7 +282,7 @@ class HttpExt @InternalStableApi /* constructor signature is hardcoded in Teleme
    *
    * @return A builder to configure more specific setup for the connection and then build a `Flow[Request, Response, Future[OutgoingConnection]]`.
    */
-  def connectionTo(host: String): OutgoingConnectionBuilder = OutgoingConnectionBuilderImpl(host, system)
+  def connectionTo(host: String): OutgoingConnectionBuilder = ???
 
   /**
    * Creates a [[pekko.stream.scaladsl.Flow]] representing a prospective HTTP client connection to the given endpoint.
@@ -1058,7 +923,7 @@ object Http extends ExtensionId[HttpExt] with ExtensionIdProvider {
   final case class IncomingConnection(
       localAddress: InetSocketAddress,
       remoteAddress: InetSocketAddress,
-      _flow: Flow[HttpResponse, HttpRequest, ServerTerminator]) {
+      _flow: Flow[HttpResponse, HttpRequest, NotUsed]) {
 
     def flow: Flow[HttpResponse, HttpRequest, NotUsed] = _flow.mapMaterializedValue(_ => NotUsed)
 

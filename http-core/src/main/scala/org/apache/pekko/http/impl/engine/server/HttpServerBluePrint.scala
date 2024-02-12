@@ -551,8 +551,6 @@ private[http] object HttpServerBluePrint {
                 case IllegalUriException(errorInfo) =>
                   finishWithIllegalRequestError(StatusCodes.BadRequest, errorInfo)
 
-                case ex: ServerTerminationDeadlineReached => failStage(ex)
-
                 case NonFatal(e) =>
                   log.error(e, "Internal server error, sending 500 response")
                   emitErrorResponse(HttpResponse(StatusCodes.InternalServerError))

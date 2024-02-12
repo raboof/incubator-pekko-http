@@ -170,11 +170,7 @@ private[http] object PoolInterface {
       case (request, responsePromise) =>
         val scheme = Uri.httpScheme(hcps.setup.connectionContext.isSecure)
         val hostHeader = headers.Host(hcps.host, Uri.normalizePort(hcps.port, scheme))
-        val effectiveRequest =
-          onDispatch(
-            request
-              .withUri(request.uri.toHttpRequestTargetOriginForm)
-              .withDefaultHeaders(hostHeader))
+        val effectiveRequest = ???
         val retries = if (request.method.isIdempotent) hcps.setup.settings.maxRetries else 0
         remainingRequested += 1
         resetIdleTimer()
