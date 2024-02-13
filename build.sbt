@@ -77,7 +77,7 @@ lazy val httpCore = project("http-core")
   .enablePlugins(ReproducibleBuildsPlugin)
   .enablePlugins(Pre213Preprocessor).settings(
     Pre213Preprocessor.pre213Files := Seq(
-      "headers.scala", "HttpMessage.scala", "LanguageRange.scala", "CacheDirective.scala", "LinkValue.scala"))
+      "headers.scala", "LanguageRange.scala", "CacheDirective.scala", "LinkValue.scala"))
   .disablePlugins(ScalafixPlugin)
 
 def project(moduleName: String) =
