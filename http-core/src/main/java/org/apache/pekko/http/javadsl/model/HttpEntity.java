@@ -189,7 +189,7 @@ public interface HttpEntity {
    * <p>In future versions, more automatic ways to warn or resolve these situations may be
    * introduced, see issue #18716.
    */
-  HttpMessage.DiscardedEntity discardBytes(Materializer materializer);
+  void discardBytes(Materializer materializer);
 
   /**
    * Discards the entities data bytes by running the {@code dataBytes} Source contained in this
@@ -214,7 +214,7 @@ public interface HttpEntity {
    * <p>In future versions, more automatic ways to warn or resolve these situations may be
    * introduced, see issue #18716.
    */
-  HttpMessage.DiscardedEntity discardBytes(ClassicActorSystemProvider system);
+  void discardBytes(ClassicActorSystemProvider system);
 
   /**
    * Represents the currently being-drained HTTP Entity which triggers completion of the contained

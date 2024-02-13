@@ -125,13 +125,12 @@ sealed trait HttpEntity extends jm.HttpEntity {
    *
    * In future versions, more automatic ways to warn or resolve these situations may be introduced, see issue #18716.
    */
-  override def discardBytes(mat: Materializer): HttpMessage.DiscardedEntity =
-    if (isStrict) HttpMessage.AlreadyDiscardedEntity
-    else new HttpMessage.DiscardedEntity(dataBytes.runWith(Sink.ignore)(mat))
+  override def discardBytes(mat: Materializer): Unit =
+     ()
 
   /** Java API */
-  def discardBytes(system: ClassicActorSystemProvider): HttpMessage.DiscardedEntity =
-    discardBytes(SystemMaterializer(system).materializer)
+  def discardBytes(system: ClassicActorSystemProvider): Unit =
+    ()
 
   /**
    * Returns a copy of the given entity with the ByteString chunks of this entity transformed by the given transformer.
@@ -716,7 +715,7 @@ object HttpEntity {
    * Represents the currently being-drained HTTP Entity which triggers completion of the contained
    * Future once the entity has been drained for the given HttpMessage completely.
    */
-  final class DiscardedEntity(f: Future[Done]) extends pekko.http.javadsl.model.HttpMessage.DiscardedEntity {
+  final class DiscardedEntity(f: Future[Done]) {
 
     /**
      * This future completes successfully once the underlying entity stream has been
@@ -750,7 +749,6 @@ object HttpEntity {
      *
      * In future versions, more automatic ways to warn or resolve these situations may be introduced, see issue #18716.
      */
-    def discardBytes()(implicit mat: Materializer): HttpMessage.DiscardedEntity =
-      httpEntity.discardBytes(mat)
+    def discardBytes()(implicit mat: Materializer): Unit = ()
   }
 }

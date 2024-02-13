@@ -75,11 +75,11 @@ sealed trait HttpMessage extends jm.HttpMessage {
    *
    * In future versions, more automatic ways to warn or resolve these situations may be introduced, see issue #18716.
    */
-  def discardEntityBytes(mat: Materializer): HttpMessage.DiscardedEntity = entity.discardBytes()(mat)
+  def discardEntityBytes(mat: Materializer): Unit = ()
 
   /** Java API */
-  def discardEntityBytes(system: ClassicActorSystemProvider): HttpMessage.DiscardedEntity =
-    entity.discardBytes()(SystemMaterializer(system).materializer)
+  def discardEntityBytes(system: ClassicActorSystemProvider): Unit =
+    ()
 
   /** Returns a copy of this message with the list of headers set to the given ones. */
   @pre213
@@ -318,8 +318,7 @@ object HttpMessage {
      *
      * In future versions, more automatic ways to warn or resolve these situations may be introduced, see issue #18716.
      */
-    def discardEntityBytes()(implicit mat: Materializer): HttpMessage.DiscardedEntity =
-      httpMessage.discardEntityBytes(mat)
+    def discardEntityBytes()(implicit mat: Materializer): Unit = ()
   }
 }
 

@@ -96,7 +96,7 @@ public interface HttpMessage {
    * <p>In future versions, more automatic ways to warn or resolve these situations may be
    * introduced, see issue #18716.
    */
-  DiscardedEntity discardEntityBytes(Materializer materializer);
+  void discardEntityBytes(Materializer materializer);
 
   /**
    * Discards the entities data bytes by running the {@code dataBytes} Source contained by the
@@ -121,7 +121,7 @@ public interface HttpMessage {
    * <p>In future versions, more automatic ways to warn or resolve these situations may be
    * introduced, see issue #18716.
    */
-  DiscardedEntity discardEntityBytes(ClassicActorSystemProvider system);
+  void discardEntityBytes(ClassicActorSystemProvider system);
 
   /**
    * Represents the currently being-drained HTTP Entity which triggers completion of the contained
